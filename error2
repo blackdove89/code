@@ -1,0 +1,8 @@
+-- Replace semicolons with commas, trim spaces
+DECLARE @commaList NVARCHAR(MAX) = LTRIM(RTRIM(REPLACE(@modifiedEmailList, ';', ',')))
+
+-- If last character is a comma, remove it
+IF RIGHT(@commaList, 1) = ','
+    SET @commaList = LEFT(@commaList, LEN(@commaList) - 1)
+
+RETURN @commaList
