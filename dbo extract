@@ -1,0 +1,81 @@
+USE [RETIRE]
+GO
+
+/****** Object:  UserDefinedFunction [dbo].[fExtractValidOpmEmails]    Script Date: 6/23/2025 10:39:21 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE FUNCTION [dbo].[fExtractValidOpmEmails](
+@string nvarchar(max), 
+@delim nvarchar(1) )
+
+
+RETURNS nvarchar(max)
+/****************************************************************************
+
+   PURPOSE: 
+      Parse the non-opm email addresses
+      filter for DOMAIN DEV, TEST and PROD
+
+   AUTHOR: 
+   Malathi Thadkamalla
+
+   ----------------------------------------------------------------------------
+   HISTORY:  $Log: /FACES30/DB/RetireDB/Support/fExtractValidOpmEmails.sql $
+   
+
+   
+   1     12/05/16 11:33a dctcrmt
+   Initial Version.
+
+
+   ****************************************************************************/
+BEGIN
+DECLARE @domainAddress nvarchar(10);
+DECLARE @email nvarchar(max);
+DECLARE @modifiedEmailList  varchar(max) = '';
+DECLARE @whitelist int;
+
+IF @string != ''
+BEGIN
+	SELECT @domainAddress= DEFAULT_DOMAIN()  
+	
+		BEGIN
+			if  @domainAddress ='OPM'
+				set @domainAddress ='gov'
+			else
+				begin			
+				if  @domainAddress ='DEV_OPM'
+				set @domainAddress ='dev'
+				else
+				set @domainAddress ='test'
+				end 
+				
+		END
+
+	DECLARE email_cursor CURSOR FOR   
+		SELECT Value FROM  dbo.fSplitString(@string, @delim)   
+	  
+		OPEN email_cursor  
+		FETCH NEXT FROM email_cursor INTO @email       
+	  
+		WHILE @@FETCH_STATUS = 0  
+		BEGIN  
+			select @whitelist = (select 1 from [dbo].[rtblReportWhiteListEmailAddresses] where emailaddress =@email)
+
+			IF CHARINDEX('@opm.'+@domainAddress ,@email) != 0 OR @whitelist != 0 
+			BEGIN       
+			 SET @modifiedEmailList +=@email+ '; ';      
+			END
+			FETCH NEXT FROM email_cursor INTO @email  
+		END  
+
+		CLOSE email_cursor  
+		DEALLOCATE email_cursor 
+		END
+ RETURN @modifiedEmailList
+ END
+GO
