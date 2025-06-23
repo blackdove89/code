@@ -1,0 +1,374 @@
+DECLARE @nCaseId       INT
+DECLARE @sClaim        VARCHAR(100)
+DECLARE @sStatus       VARCHAR(10)
+DECLARE @sSpecialist   VARCHAR(200)
+DECLARE @sReviewer     VARCHAR(200)
+DECLARE @sRecipients   VARCHAR(400)
+
+DECLARE @sSubject      VARCHAR(100)
+DECLARE @sMessage      VARCHAR(1000)
+DECLARE @CutOffDate DATETIME
+DECLARE @CheckDate DATETIME
+
+DECLARE @rc            INT
+DECLARE @Msg           VARCHAR(1000)
+
+   /*
+   Start - Get REPORT Email information
+   */
+   
+   --DECLARE @rc int
+   DECLARE @Recipients                       VARCHAR(1000) 
+   DECLARE @Copy                                VARCHAR(1000) 
+   DECLARE @BlindCopy                         VARCHAR(1000) 
+   DECLARE @ErrorRecipients                 VARCHAR(1000) 
+   DECLARE @AdminRecipients               VARCHAR(1000) 
+   DECLARE @sMsg VARCHAR(2000)
+   EXEC spGetReportEMailAddresses 'Move Future AS cases back to EDIT', @Recipients OUTPUT, @Copy OUTPUT, @BlindCopy OUTPUT, @ErrorRecipients OUTPUT, @AdminRecipients OUTPUT, @sMsg OUTPUT
+   
+   /*
+   Complete - Get REPORT Email information
+   */
+
+SELECT 
+   @CutOffDate = MIN(CutOffDate)
+FROM 
+   rtblCutOff WHERE CutOffDate > GetDate() - 1  
+
+SET @CutOffDate = DATEADD(m, 1, @CutOffDate)
+
+SET @CheckDate = CAST(MONTH(@CutOffDate) AS VARCHAR(2)) + '/01/' + CAST(YEAR(@CutOffDate) AS VARCHAR(4))
+
+-- Set the Job for the FACES Security database.
+DECLARE cCase CURSOR FOR 
+   SELECT     
+      DISTINCT d.CaseId, d.Claim, Status, k.Email Specialist, l.Email Reviewer 
+   FROM         
+      dbo.vwCases d
+         JOIN vwCaseServiceSummary e ON d.caseid = e.caseid
+            JOIN vwCodeList m ON e.RetirementTypeId = m.CodeId
+         JOIN dbo.tblResults A ON a.CaseId = d.CaseId
+         JOIN dbo.tblAdjustments b ON d.CaseId = b.CaseId 
+            JOIN dbo.vwCodeList c ON b.AddDeductCodeId = c.CodeId       
+         LEFT JOIN tblAnnuitySupplement h on d.Caseid = h.CaseId 
+         JOIN rvwUserList k on d.specialist = k.login
+         JOIN rvwUserList l on d.reviewer = l.login
+   WHERE     
+      d.Status = '300' AND 
+      c.CodeType = 'AddDeductCodes' AND 
+      c.CodeAbbrev = '67' AND 
+      b.RunType = (SELECT o.RunType FROM tblRunResults o WHERE b.CaseId = o.CaseId AND btriggered = 1) AND -- incluse AS fromn the trigger run
+      e.CaseType IN(2, 3) AND
+      RetirementTypeId <> [dbo].[fGetCodeId]('C','SepCodes') AND -- exclude old 6C
+      EXISTS(SELECT 1 FROM tblRunResults f where d.caseid = f.caseid and (CalcRetirementType <> 'C' OR CalcRetirementType IS NULL) AND bTriggered = 1) AND  -- exclude new 6C
+      a.ASSystem_BeginDate > a.AnnuityStartDate AND
+      ISNULL(ASUser_BeginDate, a.ASSystem_BeginDate) >= @CheckDate    
+
+BEGIN
+   OPEN cCase 
+
+   FETCH FROM cCase INTO @nCaseId, @sClaim, @sStatus, @sSpecialist, @sReviewer
+
+   WHILE @@fetch_status = 0
+
+   BEGIN
+      
+      PRINT @sClaim
+      IF @sStatus = '300'
+      BEGIN 
+         EXEC @rc = spSetStatus @CaseId = @nCaseId, @Status = '210', @Login  = '<system>', @Msg = @Msg OUTPUT
+      END
+      ELSE 
+      BEGIN  
+         EXEC @rc = spSetStatus @CaseId = @nCaseId, @Status = '410', @Login  = '<system>', @Msg = @Msg OUTPUT
+      END 
+
+      SET @sRecipients = ISNULL(@sSpecialist + ';', '') + ISNULL(@sReviewer + ';', '')
+      SET @sSubject = 'Case ' + @sClaim + ' moved back.'
+      SET @sMessage = 'The Annuity Supplement start date is after the current payment date.  Check the Contributions Tab Override box to remove the Annuity Supplement and re-submit the case to review.'
+
+      EXEC @rc = spQueueMail @Recipients = @sRecipients, @BCC = @BlindCopy, @Subject = @sSubject, @Message = @sMessage, @bTimeStamp = 1, @Msg = @Msg OUTPUT
+
+      FETCH FROM cCase INTO @nCaseId, @sClaim, @sStatus, @sSpecialist, @sReviewer
+   END
+   CLOSE cCase
+   DEALLOCATE cCase
+END
+GO
+
+
+
+USE [RETIRE]
+GO
+
+/****** Object:  StoredProcedure [dbo].[spGetReportEMailAddresses]    Script Date: 6/23/2025 11:06:07 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE PROCEDURE [dbo].[spGetReportEMailAddresses]
+    @ReportName                    VARCHAR(200)
+   ,@Recipients                    VARCHAR(1000) OUTPUT
+   ,@Copy                          VARCHAR(1000) OUTPUT
+   ,@BlindCopy                     VARCHAR(1000) OUTPUT
+   ,@ErrorRecipients               VARCHAR(1000) OUTPUT
+   ,@AdminRecipients               VARCHAR(1000) OUTPUT
+   ,@Msg                           VARCHAR(2000) OUTPUT   
+AS
+
+   /****************************************************************************
+
+   PURPOSE:
+      Retrieves Email address to for a given report.
+
+   RETURN VALUES: 
+      0             : For Sucessful Execution.
+      -100          : For Usage Error.
+      -101 to -999  : For Execution and Validation Errors.
+
+   AUTHOR:
+      Satish Bollempalli
+      Malathi Thadkamalla
+
+   ----------------------------------------------------------------------------
+   HISTORY:  $Log: /FACES30/DB/RetireDB/Support/spGetReportEMailAddresses.sql $
+   
+   3     12/05/16 11:28a Dctcrmt
+   Modifed fExtractValidOPM
+   
+   2     12/02/16 12:42p Dctcrmt
+   SBM 170054: Make sure SQL Server does not send email to non-opm email
+   addresses
+   
+   1     5/21/12 5:12p Ctcrsbol
+
+   ****************************************************************************/
+
+BEGIN
+
+   SET NOCOUNT ON
+   DECLARE @sCR                              VARCHAR(2)
+   
+   SET @sCR = CHAR(13) + CHAR(10)
+
+   --=============================
+   -- Validation and Usage Section
+   --=============================
+
+   -- Usage Section
+   IF dbo.fIsBlank(@ReportName) = 1
+   BEGIN
+
+      SET @Msg = 'Usage: spGetReportEMailAddresses   '
+      SET @Msg = @Msg + @sCR + '    @ReportName                      VARCHAR(200) = NULL     (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@ReportName                   AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '   ,@Recipients                      VARCHAR(1000) = NULL    (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(dbo.fExtractValidOpmEmails(@Recipients,';') AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '   ,@Copy                            VARCHAR(1000) = NULL    (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(dbo.fExtractValidOpmEmails(@Copy,';') AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '   ,@BlindCopy                       VARCHAR(1000) = NULL    (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(dbo.fExtractValidOpmEmails(@BlindCopy,';') AS VARCHAR(20)) , '[NULL]')  + ')'      
+      SET @Msg = @Msg + @sCR + '   ,@ErrorRecipients                 VARCHAR(1000) = NULL    (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(dbo.fExtractValidOpmEmails(@ErrorRecipients,';') AS VARCHAR(20)) , '[NULL]')  + ')'            
+      SET @Msg = @Msg + @sCR + '   ,@AdminRecipients                 VARCHAR(1000) = NULL    (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(dbo.fExtractValidOpmEmails(@AdminRecipients,';') AS VARCHAR(20)) , '[NULL]')  + ')'            
+      SET @Msg = @Msg + @sCR + '   ,@Msg                             VARCHAR(2000)           (OUTPUT Paramater)'
+
+      RETURN -100
+   END
+
+
+
+
+
+
+   --=============================
+   -- End of Validation Section
+   --=============================
+
+   --=============================
+   -- Get the information 
+   --=============================  
+
+   SELECT 
+       @Recipients      = dbo.fExtractValidOpmEmails(Recipients,';')    
+      ,@Copy            = dbo.fExtractValidOpmEmails(Copy,';')             
+      ,@BlindCopy       = dbo.fExtractValidOpmEmails(BlindCopy,';') 
+      ,@ErrorRecipients = dbo.fExtractValidOpmEmails(ErrorRecipients,';')                  
+      ,@AdminRecipients = dbo.fExtractValidOpmEmails(AdminRecipients,';')   
+   FROM
+      dbo.rtblReportEmailAddresses
+   WHERE
+      ReportName = @ReportName      
+   
+
+   SET NOCOUNT ON
+   
+   RETURN 0
+   
+   --=============================
+   -- End of Getting the information
+   --=============================
+
+    
+
+END
+GO
+
+USE [RETIRE]
+GO
+
+/****** Object:  StoredProcedure [dbo].[spQueueMail]    Script Date: 6/23/2025 11:06:46 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+CREATE PROCEDURE [dbo].[spQueueMail]
+    @Recipients                    VARCHAR(500)
+   ,@CC                            VARCHAR(500)          = ''
+   ,@BCC                           VARCHAR(500)          = ''
+   ,@Subject                       VARCHAR(80)
+   ,@Message                       VARCHAR(8000)
+   ,@Query                         VARCHAR(8000)         = NULL
+   ,@DBUse                         VARCHAR(30)           = ''
+   ,@Attachments                   VARCHAR(100)          = ''
+   ,@bAttachResults                BIT                   = 0
+   ,@bNoOutput                     BIT                   = 0 
+   ,@bNoHeader                     BIT                   = 0 
+   ,@Width                         smallint              = 80
+   ,@bTimeStamp                    BIT                   = 0
+   ,@Msg                           VARCHAR(2000) OUTPUT
+AS
+   /****************************************************************************
+
+   PURPOSE:
+
+   RETURN VALUES      
+      0             : For Sucessful Execution.
+      -100          : For Usage Error.
+
+   AUTHOR
+      Satish Bollempalli
+      Malathi Thadkamalla
+
+   ----------------------------------------------------------------------------
+   HISTORY:  $Log: /FACES30/DB/RetireDB/Admin/spQueueMail.sql $
+   
+   9     12/05/16 11:28a Dctcrmt
+   Modifed fExtractValidOPM
+   
+   8     12/02/16 12:42p Dctcrmt
+   SBM 170054: Make sure SQL Server does not send email to non-opm email
+   addresses
+   
+   7     11/13/13 11:06a Dctcrsbol
+   Added logic to skip if no Recipients or CC or BCC information passed.
+   
+   6     9/24/13 8:15a Dctcrsbol
+   
+   Made Changes releated to the e-mail process to smtp. Also deleted BCC
+   since SQL2008 w/smtp logs the send out e-mails in the database.
+   
+   Changed the project name in the directory path.
+   
+   RBE 1.0 Version.
+
+
+   ******************************************************************************/
+
+BEGIN
+
+
+   --=============================
+   -- Declaration Section
+   --=============================
+
+   DECLARE @sDbName                          VARCHAR(30)
+   DECLARE @dtSend                           DATETIME
+   DECLARE @sCR                              VARCHAR(2)     = CHAR(13) + CHAR(10)
+   
+   --=============================
+   -- End of Declaration Section
+   --=============================
+
+
+   IF @Recipients IS NULL OR 
+      @Subject    IS NULL OR 
+      @Message    IS NULL
+   BEGIN
+
+      SET @Msg = 'Usage: spQueueMail   '
+      SET @Msg = @Msg + @sCR + '   @Recipients                      VARCHAR(500)            (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(dbo.fExtractValidOpmEmails(@Recipients,';')                     AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@CC                              VARCHAR(500) = ''       (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(dbo.fExtractValidOpmEmails(@CC,';')                             AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@BCC                             VARCHAR(500) = ''       (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(dbo.fExtractValidOpmEmails(@BCC,';')                            AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@Subject                         VARCHAR(80)             (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@Subject                      AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@Message                         VARCHAR(8000)           (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@Message                      AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@Query                           VARCHAR(8000) = NULL    (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@Query                        AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@DBUse                           VARCHAR(30) = ''        (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@DBUse                        AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@Attachments                     VARCHAR(100) = ''       (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@Attachments                  AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@bAttachResults                  BIT = 0                 (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@bAttachResults               AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@bNoOutput                       BIT = 0                 (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@bNoOutput                    AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@bNoHeader                       BIT = 0                 (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@bNoHeader                    AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@Width                           SMALLINT = 80           (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@Width                        AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@bTimeStamp                      BIT = 0                 (INPUT Paramater) (Specified Value: ' + ISNULL(Cast(@bTimeStamp                   AS VARCHAR(20)) , '[NULL]')  + ')'
+      SET @Msg = @Msg + @sCR + '  ,@Msg                             VARCHAR(2000)           (OUTPUT Paramater)'
+
+      PRINT @Msg
+
+      RETURN -100
+   END
+
+
+   IF dbo.fIsBlank(@DBUse) = 1
+      SET @sDbName = DB_NAME()
+   ELSE 
+      SET @sDbName = @DBUse
+
+   IF @bTimeStamp = 1
+      set @dtSend = GETDATE()     
+
+   IF dbo.fIsBlank(@Recipients) = 0 OR 
+      dbo.fIsBlank(@CC) = 0 OR 
+      dbo.fIsBlank(@BCC) = 0  
+   BEGIN
+
+      INSERT INTO tblMailQueue (
+          Recipients    
+         ,CC            
+         ,BCC           
+         ,Subject       
+         ,Message       
+         ,Query         
+         ,DBUse
+         ,Attachments   
+         ,bAttachResults
+         ,bNoOutput     
+         ,bNoHeader     
+         ,Width
+         ,SendTime
+      )
+      VALUES (
+          dbo.fExtractValidOpmEmails(@Recipients,';')       
+         ,dbo.fExtractValidOpmEmails(@CC,';')             
+         ,dbo.fExtractValidOpmEmails(@BCC,';')         
+         ,@Subject       
+         ,@Message       
+         ,@Query         
+         ,@sDbName
+         ,@Attachments   
+         ,@bAttachResults
+         ,@bNoOutput     
+         ,@bNoHeader     
+         ,@Width
+         ,@dtSend
+      )                  
+   END
+   
+   SET @Msg = 'Sucessfully entered the Mail Entry.'
+   RETURN 0  
+
+END
+GO
+
+
