@@ -1,0 +1,17 @@
+Date		7/16/2025 5:30:46 PM
+Log		Job History (Process Cases)
+
+Step ID		3
+Server		AZEVWD-FCSDB01
+Job Name		Process Cases
+Step Name		Move Future AS cases back to EDIT
+Duration		00:00:00
+Sql Severity	16
+Sql Message ID	16917
+Operator Emailed	
+Operator Net sent	
+Operator Paged	
+Retries Attempted	0
+
+Message
+Executed as user: DEV_OPM\FACES_DB. Subquery returned more than 1 value. This is not permitted when the subquery follows =, !=, <, <= , >, >= or when the subquery is used as an expression. [SQLSTATE 21000] (Error 512)  Cursor is not open. [SQLSTATE 42000] (Error 16917)  Cursor is not open. [SQLSTATE 42000] (Error 16917).  The step failed.
