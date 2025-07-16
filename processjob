@@ -1,0 +1,503 @@
+USE [msdb]
+GO
+
+/****** Object:  Job [Process Cases]    Script Date: 7/16/2025 4:55:12 PM ******/
+BEGIN TRANSACTION
+DECLARE @ReturnCode INT
+SELECT @ReturnCode = 0
+/****** Object:  JobCategory [RBC Processing]    Script Date: 7/16/2025 4:55:12 PM ******/
+IF NOT EXISTS (SELECT name FROM msdb.dbo.syscategories WHERE name=N'RBC Processing' AND category_class=1)
+BEGIN
+EXEC @ReturnCode = msdb.dbo.sp_add_category @class=N'JOB', @type=N'LOCAL', @name=N'RBC Processing'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+
+END
+
+DECLARE @jobId BINARY(16)
+EXEC @ReturnCode =  msdb.dbo.sp_add_job @job_name=N'Process Cases', 
+		@enabled=1, 
+		@notify_level_eventlog=2, 
+		@notify_level_email=2, 
+		@notify_level_netsend=0, 
+		@notify_level_page=0, 
+		@delete_level=0, 
+		@description=N'No description available.', 
+		@category_name=N'RBC Processing', 
+		@owner_login_name=N'DEV_OPM\FACES_DB', 
+		@notify_email_operator_name=N'DBA', @job_id = @jobId OUTPUT
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Active Node Check]    Script Date: 7/16/2025 4:55:12 PM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Active Node Check', 
+		@step_id=1, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=1, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'IF NOT EXISTS(
+ 	      SELECT 
+            1
+         FROM 
+            sys.dm_hadr_name_id_map nim
+	            JOIN sys.dm_hadr_availability_group_states ags ON nim.ag_id = ags.group_id
+      WHERE
+	      primary_replica = CONVERT(sysname, SERVERPROPERTY (''MACHINENAME'')) + ISNULL(''\'' + CONVERT(sysname, SERVERPROPERTY(''INSTANCENAME'')), '''')
+      )
+      BEGIN
+          PRINT ''Node is not active. Terminating the job.''
+          SELECT 1/0
+      END
+      GO
+', 
+		@database_name=N'master', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Move POST 10/90 Refund Cases back.]    Script Date: 7/16/2025 4:55:12 PM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Move POST 10/90 Refund Cases back.', 
+		@step_id=2, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'DECLARE @nCaseId       INT
+DECLARE @sClaim        VARCHAR(100)
+DECLARE @sStatus       VARCHAR(10)
+DECLARE @sSpecialist   VARCHAR(200)
+DECLARE @sReviewer     VARCHAR(200)
+DECLARE @sRecipients   VARCHAR(400)
+
+DECLARE @sSubject      VARCHAR(100)
+DECLARE @sMessage      VARCHAR(1000)
+
+
+DECLARE @rc            INT
+DECLARE @Msg           VARCHAR(1000)
+
+
+   /*
+   Start - Get REPORT Email information
+   */
+   
+   --DECLARE @rc int
+   DECLARE @Recipients                       VARCHAR(1000) 
+   DECLARE @Copy                                VARCHAR(1000) 
+   DECLARE @BlindCopy                         VARCHAR(1000) 
+   DECLARE @ErrorRecipients                 VARCHAR(1000) 
+   DECLARE @AdminRecipients               VARCHAR(1000) 
+   DECLARE @sMsg VARCHAR(2000)
+   EXEC spGetReportEMailAddresses ''Move POST 10/90 Refund Cases back.'', @Recipients OUTPUT, @Copy OUTPUT, @BlindCopy OUTPUT, @ErrorRecipients OUTPUT, @AdminRecipients OUTPUT, @sMsg OUTPUT
+   
+   /*
+   Complete - Get REPORT Email information
+   */
+
+
+-- Set the Job for the FACES Security database.
+DECLARE cCase CURSOR FOR SELECT CaseId, Claim, Status, p.Email Specialist, q.Email Reviewer FROM vwCases a left join rvwUserList p on a.Specialist = p.Login left join rvwUserList q on a.Reviewer = q.Login WHERE Status IN (''300'', ''500'') AND EXISTS(SELECT 1 FROM vwCaseService b JOIN vwCodeList d ON b.ServiceTypeId = d.CodeId WHERE a.caseid = b.caseid AND d.CodeAbbrev = ''7'')
+
+
+BEGIN
+   OPEN cCase 
+
+   FETCH FROM cCase INTO @nCaseId, @sClaim, @sStatus, @sSpecialist, @sReviewer
+
+   WHILE @@fetch_status = 0
+
+   BEGIN
+      
+      PRINT @sClaim
+      IF @sStatus = ''300''
+      BEGIN 
+         --PRINT ''EXEC @rc=spSetStatus @CaseId = @nCaseId, @Status = ''''210'''', @Login  = ''''<system>'''', @Msg = @Msg OUTPUT''
+         EXEC @rc = spSetStatus @CaseId = @nCaseId, @Status = ''210'', @Login  = ''<system>'', @Msg = @Msg OUTPUT
+      END
+      ELSE 
+      BEGIN  
+         --PRINT ''EXEC @rc=spSetStatus @CaseId = @nCaseId, @Status = ''''410'''', @Login  = ''''<system>'''', @Msg = @msg OUTPUT''
+         EXEC @rc = spSetStatus @CaseId = @nCaseId, @Status = ''410'', @Login  = ''<system>'', @Msg = @Msg OUTPUT
+      END 
+
+      SET @sRecipients = ISNULL(@sSpecialist + '';'', '''') + ISNULL(@sReviewer + '';'', '''')
+
+
+      SET @sSubject = ''Case '' + @sClaim + '' moved back.''
+      SET @sMessage = ''This case cannot be triggered through FACES because the service contains a post-10/90 Refund entry. Cases with post-10/90 Refund entries are now being rejected after a trigger attempt instead of before, since some of these cases can be FACES or Mainframe Face Briefed with slight modifications to the original data.''
+
+      --PRINT ''EXEC spQueueMail @Recipients = '''''' + @sRecipients + '''''', @BCC = ''''FACESSupport@opm.dev'''', @Subject = '''''' + @sSubject + '''''', @Message = '''''' + @sMessage + '''''', @bTimeStamp = 1, @Msg = @sMsg OUTPUT''
+
+      EXEC @rc = spQueueMail @Recipients = @sRecipients, @BCC = @BlindCopy, @Subject = @sSubject, @Message = @sMessage, @bTimeStamp = 1, @Msg = @Msg OUTPUT
+
+      FETCH FROM cCase INTO @nCaseId, @sClaim, @sStatus, @sSpecialist, @sReviewer
+   END
+   CLOSE cCase
+
+   DEALLOCATE cCase
+END
+GO
+
+
+', 
+		@database_name=N'RETIRE', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Move Future AS cases back to EDIT]    Script Date: 7/16/2025 4:55:12 PM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Move Future AS cases back to EDIT', 
+		@step_id=3, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'DECLARE @nCaseId       INT
+DECLARE @sClaim        VARCHAR(100)
+DECLARE @sStatus       VARCHAR(10)
+DECLARE @sSpecialist   VARCHAR(200)
+DECLARE @sReviewer     VARCHAR(200)
+DECLARE @sRecipients   VARCHAR(400)
+
+DECLARE @sSubject      VARCHAR(100)
+DECLARE @sMessage      VARCHAR(1000)
+DECLARE @CutOffDate DATETIME
+DECLARE @CheckDate DATETIME
+
+DECLARE @rc            INT
+DECLARE @Msg           VARCHAR(1000)
+
+   /*
+   Start - Get REPORT Email information
+   */
+   
+   --DECLARE @rc int
+   DECLARE @Recipients                       VARCHAR(1000) 
+   DECLARE @Copy                                VARCHAR(1000) 
+   DECLARE @BlindCopy                         VARCHAR(1000) 
+   DECLARE @ErrorRecipients                 VARCHAR(1000) 
+   DECLARE @AdminRecipients               VARCHAR(1000) 
+   DECLARE @sMsg VARCHAR(2000)
+   EXEC spGetReportEMailAddresses ''Move Future AS cases back to EDIT'', @Recipients OUTPUT, @Copy OUTPUT, @BlindCopy OUTPUT, @ErrorRecipients OUTPUT, @AdminRecipients OUTPUT, @sMsg OUTPUT
+   
+   /*
+   Complete - Get REPORT Email information
+   */
+
+SELECT 
+   @CutOffDate = MIN(CutOffDate)
+FROM 
+   rtblCutOff WHERE CutOffDate > GetDate() - 1  
+
+SET @CutOffDate = DATEADD(m, 1, @CutOffDate)
+
+SET @CheckDate = CAST(MONTH(@CutOffDate) AS VARCHAR(2)) + ''/01/'' + CAST(YEAR(@CutOffDate) AS VARCHAR(4))
+
+-- Set the Job for the FACES Security database.
+DECLARE cCase CURSOR FOR 
+   SELECT     
+      DISTINCT d.CaseId, d.Claim, Status, k.Email Specialist, l.Email Reviewer 
+   FROM         
+      dbo.vwCases d
+         JOIN vwCaseServiceSummary e ON d.caseid = e.caseid
+            JOIN vwCodeList m ON e.RetirementTypeId = m.CodeId
+         JOIN dbo.tblResults A ON a.CaseId = d.CaseId
+         JOIN dbo.tblAdjustments b ON d.CaseId = b.CaseId 
+            JOIN dbo.vwCodeList c ON b.AddDeductCodeId = c.CodeId       
+         LEFT JOIN tblAnnuitySupplement h on d.Caseid = h.CaseId 
+         JOIN rvwUserList k on d.specialist = k.login
+         JOIN rvwUserList l on d.reviewer = l.login
+   WHERE     
+      d.Status = ''300'' AND 
+      c.CodeType = ''AddDeductCodes'' AND 
+      c.CodeAbbrev = ''67'' AND 
+      b.RunType = (SELECT  o.RunType FROM tblRunResults o WHERE b.CaseId = o.CaseId AND btriggered = 1) AND -- incluse AS fromn the trigger run
+      e.CaseType IN(2, 3) AND
+      RetirementTypeId <> [dbo].[fGetCodeId](''C'',''SepCodes'') AND -- exclude old 6C
+      EXISTS(SELECT 1 FROM tblRunResults f where d.caseid = f.caseid and (CalcRetirementType <> ''C'' OR CalcRetirementType IS NULL) AND bTriggered = 1) AND  -- exclude new 6C
+      a.ASSystem_BeginDate > a.AnnuityStartDate AND
+      ISNULL(ASUser_BeginDate, a.ASSystem_BeginDate) >= @CheckDate    
+
+BEGIN
+   OPEN cCase 
+
+   FETCH FROM cCase INTO @nCaseId, @sClaim, @sStatus, @sSpecialist, @sReviewer
+
+   WHILE @@fetch_status = 0
+
+   BEGIN
+      
+      PRINT @sClaim
+      IF @sStatus = ''300''
+      BEGIN 
+         EXEC @rc = spSetStatus @CaseId = @nCaseId, @Status = ''210'', @Login  = ''<system>'', @Msg = @Msg OUTPUT
+      END
+      ELSE 
+      BEGIN  
+         EXEC @rc = spSetStatus @CaseId = @nCaseId, @Status = ''410'', @Login  = ''<system>'', @Msg = @Msg OUTPUT
+      END 
+
+      SET @sRecipients = ISNULL(@sSpecialist + '';'', '''') + ISNULL(@sReviewer + '';'', '''')
+      SET @sSubject = ''Case '' + @sClaim + '' moved back.''
+      SET @sMessage = ''The Annuity Supplement start date is after the current payment date.  Check the Contributions Tab Override box to remove the Annuity Supplement and re-submit the case to review.''
+
+      EXEC @rc = spQueueMail @Recipients = @sRecipients, @BCC = @BlindCopy, @Subject = @sSubject, @Message = @sMessage, @bTimeStamp = 1, @Msg = @Msg OUTPUT
+
+      FETCH FROM cCase INTO @nCaseId, @sClaim, @sStatus, @sSpecialist, @sReviewer
+   END
+   CLOSE cCase
+   DEALLOCATE cCase
+END
+GO', 
+		@database_name=N'RETIRE', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Move Mandatory Cases back.]    Script Date: 7/16/2025 4:55:12 PM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Move Mandatory Cases back.', 
+		@step_id=4, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=0, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'DECLARE @nCaseId       INT
+DECLARE @sClaim        VARCHAR(100)
+DECLARE @sStatus       VARCHAR(10)
+DECLARE @sSpecialist   VARCHAR(200)
+DECLARE @sReviewer     VARCHAR(200)
+DECLARE @sRecipients   VARCHAR(400)
+
+DECLARE @sSubject      VARCHAR(100)
+DECLARE @sMessage      VARCHAR(1000)
+
+
+DECLARE @rc            INT
+DECLARE @Msg           VARCHAR(1000)
+
+
+   /*
+   Start - Get REPORT Email information
+   */
+   
+   --DECLARE @rc int
+   DECLARE @Recipients                       VARCHAR(1000) 
+   DECLARE @Copy                                VARCHAR(1000) 
+   DECLARE @BlindCopy                         VARCHAR(1000) 
+   DECLARE @ErrorRecipients                 VARCHAR(1000) 
+   DECLARE @AdminRecipients               VARCHAR(1000) 
+   DECLARE @sMsg VARCHAR(2000)
+   EXEC spGetReportEMailAddresses ''Mandatory Cases back.'', @Recipients OUTPUT, @Copy OUTPUT, @BlindCopy OUTPUT, @ErrorRecipients OUTPUT, @AdminRecipients OUTPUT, @sMsg OUTPUT
+   
+   /*
+   Complete - Get REPORT Email information
+   */
+
+
+-- Set the Job for the FACES Security database.
+DECLARE cCase CURSOR FOR 
+SELECT 
+	CaseId, Claim, Status, p.Email Specialist, q.Email Reviewer 
+FROM 
+	vwCases a 
+		left join rvwUserList p on a.Specialist = p.Login 
+		left join rvwUserList q on a.Reviewer = q.Login 
+WHERE 
+	Status IN (''300'', ''500'') AND 
+	EXISTS
+	(
+		SELECT 
+			1 
+		FROM 
+			vwCaseServiceSummary b 
+				JOIN vwCodeList d ON b.RetirementTypeId = d.CodeId 
+		WHERE 
+			a.caseid = b.caseid AND 
+			d.CodeAbbrev IN (''C'', ''M'') 
+	) 
+UNION
+SELECT 
+	CaseId, Claim, Status, p.Email Specialist, q.Email Reviewer 
+FROM 
+	vwCases a 
+		left join rvwUserList p on a.Specialist = p.Login 
+		left join rvwUserList q on a.Reviewer = q.Login 
+WHERE 
+	Status IN (''300'', ''500'') AND 
+	EXISTS
+	(
+		SELECT 
+			1
+		FROM
+			tblCaseRelation n  
+				JOIN vwCases m ON n.OriginalCaseId = m.CaseId
+					JOIN vwCaseServiceSummary o ON m.CaseId = o.CaseId
+						JOIN vwCodeList l ON o.RetirementTypeId = l.CodeId 
+		WHERE
+			a.CaseId = n.GeneratedCaseId AND 
+			m.Status = ''402'' AND 
+			l.CodeAbbrev IN (''C'', ''M'')
+	)
+
+
+
+BEGIN
+   OPEN cCase 
+
+   FETCH FROM cCase INTO @nCaseId, @sClaim, @sStatus, @sSpecialist, @sReviewer
+
+   WHILE @@fetch_status = 0
+
+   BEGIN
+      
+      PRINT @sClaim
+      IF @sStatus = ''300''
+      BEGIN 
+         --PRINT ''EXEC @rc=spSetStatus @CaseId = @nCaseId, @Status = ''''210'''', @Login  = ''''<system>'''', @Msg = @Msg OUTPUT''
+         EXEC @rc = spSetStatus @CaseId = @nCaseId, @Status = ''210'', @Login  = ''<system>'', @Msg = @Msg OUTPUT
+      END
+      ELSE 
+      BEGIN  
+         --PRINT ''EXEC @rc=spSetStatus @CaseId = @nCaseId, @Status = ''''410'''', @Login  = ''''<system>'''', @Msg = @msg OUTPUT''
+         EXEC @rc = spSetStatus @CaseId = @nCaseId, @Status = ''410'', @Login  = ''<system>'', @Msg = @Msg OUTPUT
+      END 
+
+      SET @sRecipients = ISNULL(@sSpecialist + '';'', '''') + ISNULL(@sReviewer + '';'', '''')
+
+
+      SET @sSubject = ''Case '' + @sClaim + '' was moved back to edit status.''
+      SET @sMessage = ''This case cannot be triggered through FACES because the Retirement Type field on the Service Tab contains M-Mandatory or C-Law Enforcement/FF.  Mandatory retirement cases must be processed using a FACES or mainframe face brief.  The C-Law Enforcement/FF Retirement Type was discontinued in March 2009 and the Retirement Type must be changed to the appropriate one to process the case.''
+
+      --PRINT ''EXEC spQueueMail @Recipients = '''''' + @sRecipients + '''''', @BCC = ''''FACESSupport@opm.dev'''', @Subject = '''''' + @sSubject + '''''', @Message = '''''' + @sMessage + '''''', @bTimeStamp = 1, @Msg = @sMsg OUTPUT''
+
+      EXEC @rc = spQueueMail @Recipients = @sRecipients, @BCC = @BlindCopy, @Subject = @sSubject, @Message = @sMessage, @bTimeStamp = 1, @Msg = @Msg OUTPUT
+
+      FETCH FROM cCase INTO @nCaseId, @sClaim, @sStatus, @sSpecialist, @sReviewer
+   END
+   CLOSE cCase
+
+   DEALLOCATE cCase
+END
+GO
+', 
+		@database_name=N'RETIRE', 
+		@flags=0
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Process Cases]    Script Date: 7/16/2025 4:55:12 PM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Process Cases', 
+		@step_id=5, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=5, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'declare @dt datetime
+set @dt = convert(varchar(10), getdate(), 121)
+IF exists (select * from rtblHolidays where Date = @dt)
+   select ''No execution on '' + Description 
+   from rtblHolidays where Date = @dt
+ELSE
+   exec spProcessCases 0
+', 
+		@database_name=N'RETIRE', 
+		@output_file_name=N'E:\FACESData\LogFiles\2025\07\ProcessCases.Log', 
+		@flags=6
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Process Payments]    Script Date: 7/16/2025 4:55:12 PM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Process Payments', 
+		@step_id=6, 
+		@cmdexec_success_code=0, 
+		@on_success_action=3, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'declare @dt datetime
+set @dt = convert(varchar(10), getdate(), 121)
+IF exists (select * from rtblHolidays where Date = @dt)
+   select ''No execution on '' + Description 
+   from rtblHolidays where Date = @dt
+ELSE IF getdate() < ''12/5/2003''
+   print ''No execution:  processing held by DBA until 12/5/03.''
+--ELSE
+   --exec spProcessPayments 0', 
+		@database_name=N'RETIRE', 
+		@output_file_name=N'E:\FACESData\LogFiles\2025\07\ProcessPayments.Log', 
+		@flags=6
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+/****** Object:  Step [Process Reissue Cases]    Script Date: 7/16/2025 4:55:12 PM ******/
+EXEC @ReturnCode = msdb.dbo.sp_add_jobstep @job_id=@jobId, @step_name=N'Process Reissue Cases', 
+		@step_id=7, 
+		@cmdexec_success_code=0, 
+		@on_success_action=1, 
+		@on_success_step_id=0, 
+		@on_fail_action=2, 
+		@on_fail_step_id=0, 
+		@retry_attempts=0, 
+		@retry_interval=1, 
+		@os_run_priority=0, @subsystem=N'TSQL', 
+		@command=N'declare @dt datetime
+set @dt = convert(varchar(10), getdate(), 121)
+IF exists (select * from rtblHolidays where Date = @dt)
+   select ''No execution on '' + Description 
+   from rtblHolidays where Date = @dt
+ELSE
+   exec spProcessReissueCases
+', 
+		@database_name=N'RETIRE', 
+		@output_file_name=N'E:\FACESData\LogFiles\2025\07\ProcessReissueCases.Log', 
+		@flags=6
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_update_job @job_id = @jobId, @start_step_id = 1
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'@OneTime', 
+		@enabled=0, 
+		@freq_type=1, 
+		@freq_interval=0, 
+		@freq_subday_type=0, 
+		@freq_subday_interval=0, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=0, 
+		@active_start_date=20240327, 
+		@active_end_date=99991231, 
+		@active_start_time=133800, 
+		@active_end_time=235959, 
+		@schedule_uid=N'53d7ef41-9367-412c-8522-b076f29a19f3'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobschedule @job_id=@jobId, @name=N'Process Cases - Prod', 
+		@enabled=1, 
+		@freq_type=8, 
+		@freq_interval=62, 
+		@freq_subday_type=1, 
+		@freq_subday_interval=0, 
+		@freq_relative_interval=0, 
+		@freq_recurrence_factor=1, 
+		@active_start_date=20060103, 
+		@active_end_date=99991231, 
+		@active_start_time=180000, 
+		@active_end_time=235959, 
+		@schedule_uid=N'f1370815-5d62-460a-8196-001a6792551d'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+EXEC @ReturnCode = msdb.dbo.sp_add_jobserver @job_id = @jobId, @server_name = N'(local)'
+IF (@@ERROR <> 0 OR @ReturnCode <> 0) GOTO QuitWithRollback
+COMMIT TRANSACTION
+GOTO EndSave
+QuitWithRollback:
+    IF (@@TRANCOUNT > 0) ROLLBACK TRANSACTION
+EndSave:
+GO
+
+
