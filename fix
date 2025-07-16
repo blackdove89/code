@@ -1,0 +1,180 @@
+-- ========================================
+-- STEP 1: Identify a test case
+-- ========================================
+
+-- Find a case with status 300 that will be processed
+DECLARE @TestCaseId INT, @TestClaim VARCHAR(9)
+
+SELECT TOP 1 
+    @TestCaseId = a.CaseId, 
+    @TestClaim = cl.Claim
+FROM tblCases a
+    JOIN tblClaim cl ON a.ClaimId = cl.ClaimId
+    JOIN rtblCode b ON a.StatusCodeId = b.CodeId
+WHERE b.Abbrev = '300'
+    AND cl.LockedBy IS NULL  -- Not locked
+ORDER BY a.CaseId DESC
+
+PRINT 'Test CaseId: ' + ISNULL(CAST(@TestCaseId AS VARCHAR(20)), 'NOT FOUND')
+PRINT 'Test Claim: ' + ISNULL(@TestClaim, 'NOT FOUND')
+
+-- If no case found with status 300, check for 700
+IF @TestCaseId IS NULL
+BEGIN
+    SELECT TOP 1 
+        @TestCaseId = a.CaseId, 
+        @TestClaim = cl.Claim
+    FROM tblCases a
+        JOIN tblClaim cl ON a.ClaimId = cl.ClaimId
+        JOIN rtblCode b ON a.StatusCodeId = b.CodeId
+    WHERE b.Abbrev = '700'
+        AND cl.LockedBy IS NULL
+    ORDER BY a.CaseId DESC
+    
+    PRINT 'Using status 700 - CaseId: ' + ISNULL(CAST(@TestCaseId AS VARCHAR(20)), 'NOT FOUND')
+END
+
+-- ========================================
+-- STEP 2: Add temporary error trigger to spGenerateMFData
+-- ========================================
+
+-- Add this code to spGenerateMFData right after the line:
+-- SET @CurrentCaseId = @nCaseId (around line 167 in the TRY block)
+
+/*
+-- TEMPORARY ERROR TRIGGER - ADD THIS TO spGenerateMFData
+IF @nCaseId = 30070  -- Replace with your test CaseId
+BEGIN
+    RAISERROR('TEST ERROR: Forcing error for CaseId %d, Claim %s to test error logging', 16, 1, @nCaseId, @ClaimNumber)
+END
+
+-- OR use claim number if you prefer:
+IF @ClaimNumber = 'A89880020'  -- Replace with your test claim
+BEGIN
+    RAISERROR('TEST ERROR: Forcing error for CaseId %d, Claim %s to test error logging', 16, 1, @nCaseId, @ClaimNumber)
+END
+*/
+
+-- ========================================
+-- STEP 3: Alternative - Create a data corruption scenario
+-- ========================================
+
+-- Option A: Temporarily corrupt required data to force spGetCSAData or spGetFERSData to fail
+-- First, backup the data
+SELECT * INTO #TempRunResults FROM tblRunResults WHERE CaseId = @TestCaseId
+
+-- Then corrupt it (this will cause spGetCSAData to fail)
+UPDATE tblRunResults 
+SET TotalComputationService = NULL 
+WHERE CaseId = @TestCaseId 
+    AND Method = 0 
+    AND bTriggered = 1
+
+-- ========================================
+-- STEP 4: Run the test
+-- ========================================
+
+-- Run with specific claim
+DECLARE @CurrentCaseId INT
+
+EXEC spGenerateMFData 
+    @ClaimNumber = 'A89880020',  -- Use your test claim
+    @Filename = 'E:\FACESData\MFData\2025\07\error_test',
+    @bTest = 1,
+    @bUpdate = 0,
+    @bSendMail = 0,
+    @bDebug = 1,
+    @CurrentCaseId = @CurrentCaseId OUTPUT
+
+PRINT 'Returned CurrentCaseId: ' + ISNULL(CAST(@CurrentCaseId AS VARCHAR(20)), 'NULL')
+
+-- Or run the full process
+EXEC spProcessCases 
+    @bTestMF = 1, 
+    @bStatusUpdate = 0, 
+    @bSendMail = 0, 
+    @bSendFile = 0, 
+    @bDebug = 0  -- Use 0 to avoid the _dbg file issue
+
+-- ========================================
+-- STEP 5: Check results
+-- ========================================
+
+-- Check error log
+SELECT TOP 10 
+    LogId,
+    Date,
+    Process,
+    CaseId,
+    ErrorMsg
+FROM tblErrorLog 
+WHERE Date >= DATEADD(MINUTE, -5, GETDATE())
+ORDER BY Date DESC
+
+-- ========================================
+-- STEP 6: Restore data if you used Option A
+-- ========================================
+
+-- Restore the corrupted data
+UPDATE r
+SET TotalComputationService = t.TotalComputationService
+FROM tblRunResults r
+    JOIN #TempRunResults t ON r.CaseId = t.CaseId 
+WHERE r.CaseId = @TestCaseId
+
+DROP TABLE #TempRunResults
+
+-- ========================================
+-- COMPLETE EXAMPLE: Force error in spGenerateMFData
+-- ========================================
+
+-- Here's the complete modification to add to spGenerateMFData:
+/*
+ALTER PROCEDURE [dbo].[spGenerateMFData]
+    -- ... parameters ...
+AS
+BEGIN
+    -- ... existing code ...
+    
+    WHILE @@FETCH_STATUS = 0 
+    BEGIN
+        BEGIN TRY 
+            -- Set the current case being processed
+            SET @CurrentCaseId = @nCaseId
+            
+            -- *** ADD THIS TEMPORARY CODE FOR TESTING ***
+            IF @nCaseId = 30070 OR @ClaimNumber = 'A89880020'
+            BEGIN
+                -- This will definitely populate @CurrentCaseId in the error
+                RAISERROR('TEST ERROR: CaseId=%d, Claim=%s - Testing error logging with CaseId tracking', 
+                          16, 1, @nCaseId, @ClaimNumber)
+            END
+            -- *** END TEMPORARY CODE ***
+            
+            SET @NR = @NR + 1
+            -- ... rest of existing code ...
+*/
+
+-- ========================================
+-- SAFEST TEST: Add error to a called procedure
+-- ========================================
+
+-- If you have access to modify spGetCSAData, add this at the beginning:
+/*
+ALTER PROCEDURE [dbo].[spGetCSAData]
+    @CaseId INT,
+    @Data VARCHAR(2000) OUTPUT,
+    @bDebug BIT = 0
+AS
+BEGIN
+    -- *** TEMPORARY TEST CODE ***
+    IF @CaseId = 30070  -- Your test case
+    BEGIN
+        RAISERROR('TEST ERROR in spGetCSAData for CaseId %d', 16, 1, @CaseId)
+        RETURN -1
+    END
+    -- *** END TEMPORARY CODE ***
+    
+    -- ... existing procedure code ...
+END
+*/
