@@ -178,3 +178,22 @@ BEGIN
     -- ... existing procedure code ...
 END
 */
+
+
+
+
+Method 2: Create Invalid Data Scenario
+
+Find a case and create bad data:
+
+sql-- Find a test case
+DECLARE @TestCaseId INT = 30070
+
+-- Create a scenario that will cause spGetFERSData to fail
+-- For example, insert invalid data that will cause a conversion error
+UPDATE tblFERSData 
+SET FERSAmount = 'INVALID'  -- This might cause a conversion error
+WHERE CaseId = @TestCaseId
+
+-- Or delete required data
+DELETE FROM tblGrossToNet WHERE CaseId = @TestCaseId AND RunType = 0
