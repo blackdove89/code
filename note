@@ -1,0 +1,92 @@
+Conditions that cause cases to be skipped (but not error):
+
+Locked cases: WHERE CaseId = @nCaseId AND dbo.fIsBlank(b.LockedBy) = 0
+Missing triggered runs: WHERE CaseId = @nCaseId and Method = 0 and bTriggered = 1
+Missing FERS data: For non-CSRS cases (RetirementType NOT IN ('1', '4'))
+Missing Gross-to-net data
+Missing Total Service
+
+Let me help you find a claim that will trigger an error. Can you run these queries to find potential test cases?
+sql-- 1. Find claims with status 300 or 700 (these are the ones that will be processed)
+SELECT TOP 10 
+    a.CaseId,
+    cl.Claim,
+    c.Abbrev as RetirementType,
+    b.Abbrev as StatusCode,
+    cl.LockedBy
+FROM tblCases a
+    JOIN tblClaim cl ON a.ClaimId = cl.ClaimId
+    JOIN rtblCode b ON a.StatusCodeId = b.CodeId
+    JOIN vwCaseServiceSummary d ON a.CaseId = d.CaseId
+    LEFT JOIN rtblCode c ON d.RetirementTypeId = c.CodeId
+WHERE b.Abbrev IN ('300', '700')
+ORDER BY a.CaseId DESC
+
+-- 2. Find a case that's missing required data (likely to cause issues)
+SELECT TOP 10
+    a.CaseId,
+    cl.Claim,
+    c.Abbrev as RetirementType,
+    b.Abbrev as StatusCode,
+    CASE WHEN rr.CaseId IS NULL THEN 'No Run Results' ELSE 'Has Run Results' END as RunStatus,
+    CASE WHEN fd.CaseId IS NULL THEN 'No FERS Data' ELSE 'Has FERS Data' END as FERSStatus,
+    CASE WHEN gn.CaseId IS NULL THEN 'No Gross-to-Net' ELSE 'Has Gross-to-Net' END as GrossToNetStatus
+FROM tblCases a
+    JOIN tblClaim cl ON a.ClaimId = cl.ClaimId
+    JOIN rtblCode b ON a.StatusCodeId = b.CodeId
+    JOIN vwCaseServiceSummary d ON a.CaseId = d.CaseId
+    LEFT JOIN rtblCode c ON d.RetirementTypeId = c.CodeId
+    LEFT JOIN tblRunResults rr ON a.CaseId = rr.CaseId AND rr.Method = 0 AND rr.bTriggered = 1
+    LEFT JOIN tblFERSData fd ON a.CaseId = fd.CaseId
+    LEFT JOIN tblGrossToNet gn ON a.CaseId = gn.CaseId
+WHERE b.Abbrev IN ('300', '700')
+    AND (rr.CaseId IS NULL OR fd.CaseId IS NULL OR gn.CaseId IS NULL)
+To force an error for testing:
+Option 1: Create a data integrity issue
+sql-- Find a case with status 300
+DECLARE @TestCaseId INT, @TestClaim VARCHAR(9)
+
+SELECT TOP 1 @TestCaseId = a.CaseId, @TestClaim = cl.Claim
+FROM tblCases a
+    JOIN tblClaim cl ON a.ClaimId = cl.ClaimId
+    JOIN rtblCode b ON a.StatusCodeId = b.CodeId
+WHERE b.Abbrev = '300'
+
+PRINT 'Test CaseId: ' + CAST(@TestCaseId AS VARCHAR(20))
+PRINT 'Test Claim: ' + @TestClaim
+
+-- Temporarily delete required data to force an error
+-- DELETE FROM tblFERSData WHERE CaseId = @TestCaseId
+-- Or update to create bad data that would cause spGetFERSData to fail
+Option 2: Add debug code to force an error
+Add this temporarily to spGenerateMFData after SET @CurrentCaseId = @nCaseId:
+sql-- Temporary debug code - add after SET @CurrentCaseId = @nCaseId
+IF @ClaimNumber = '123456789'  -- Replace with an actual claim number
+BEGIN
+    RAISERROR('Test error for CaseId %d with Claim %s', 16, 1, @nCaseId, @ClaimNumber)
+END
+Option 3: Test with debug output
+Let's first run with debug mode to see what's happening:
+sql-- Test with a specific claim
+DECLARE @CurrentCaseId INT
+
+EXEC spGenerateMFData 
+    @ClaimNumber = '123456789',  -- Replace with an actual claim from your system
+    @Filename = 'C:\TestPath\debugtest',
+    @bTest = 1,
+    @bUpdate = 0,
+    @bSendMail = 0,
+    @bDebug = 1,
+    @CurrentCaseId = @CurrentCaseId OUTPUT
+
+PRINT 'Returned CurrentCaseId: ' + ISNULL(CAST(@CurrentCaseId AS VARCHAR(20)), 'NULL')
+Could you:
+
+Run the first two queries to show me what claims are available?
+Let me know if you have access to modify the spGetCSAData, spGetFERSData, or spGetCSFData procedures (these are called from within spGenerateMFData and might be where the actual errors occur)?
+Check if there are any recent entries in tblErrorLog that might give us clues?
+
+sqlSELECT TOP 20 * 
+FROM tblErrorLog 
+WHERE Process IN ('spGenerateMFData', 'spGetCSAData', 'spGetFERSData', 'spGetCSFData')
+ORDER BY Date DESC
