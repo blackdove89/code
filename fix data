@@ -1,0 +1,262 @@
+-- ================================================================
+-- IDENTIFY AND FIX DATA CAUSING JOB STEP FAILURE
+-- ================================================================
+
+-- The error occurs in this line from the job step:
+-- b.RunType = (SELECT o.RunType FROM tblRunResults o WHERE b.CaseId = o.CaseId AND btriggered = 1)
+-- 
+-- This means some CaseId has multiple RunType values where bTriggered = 1
+
+-- ================================================================
+-- STEP 1: IDENTIFY THE PROBLEMATIC DATA
+-- ================================================================
+
+-- Find CaseIds that have multiple RunType values with bTriggered = 1
+SELECT 
+    'Cases with Multiple Triggered RunTypes' AS Issue,
+    rr.CaseId,
+    cl.Claim,
+    COUNT(DISTINCT rr.RunType) AS Distinct_RunTypes,
+    STRING_AGG(CAST(rr.RunType AS VARCHAR), ', ') AS RunType_List,
+    COUNT(*) AS Total_Triggered_Records
+FROM tblRunResults rr
+    JOIN tblCases c ON rr.CaseId = c.CaseId
+    JOIN tblClaim cl ON c.ClaimId = cl.ClaimId
+WHERE rr.bTriggered = 1
+GROUP BY rr.CaseId, cl.Claim
+HAVING COUNT(DISTINCT rr.RunType) > 1
+ORDER BY rr.CaseId
+
+-- ================================================================
+-- STEP 2: DETAILED ANALYSIS OF PROBLEMATIC CASES
+-- ================================================================
+
+-- Get detailed information about the problematic cases
+SELECT 
+    rr.CaseId,
+    cl.Claim,
+    rr.RunType,
+    rr.Method,
+    rr.bTriggered,
+    rr.Created,
+    rr.CreatedBy,
+    rr.TotalComputationService,
+    rr.CalcRetirementType,
+    'Multiple RunTypes for same CaseId' AS Issue
+FROM tblRunResults rr
+    JOIN tblCases c ON rr.CaseId = c.CaseId
+    JOIN tblClaim cl ON c.ClaimId = cl.ClaimId
+WHERE rr.bTriggered = 1
+    AND rr.CaseId IN (
+        -- Only cases that have multiple RunTypes with bTriggered = 1
+        SELECT CaseId 
+        FROM tblRunResults 
+        WHERE bTriggered = 1 
+        GROUP BY CaseId 
+        HAVING COUNT(DISTINCT RunType) > 1
+    )
+ORDER BY rr.CaseId, rr.RunType, rr.Created
+
+-- ================================================================
+-- STEP 3: CHECK WHICH CASES ARE AFFECTED BY THE JOB STEP
+-- ================================================================
+
+-- See which specific cases would be affected by the job step query
+-- (These are the cases that cause the subquery error)
+SELECT DISTINCT
+    d.CaseId,
+    d.Claim,
+    'Will cause subquery error' AS Status,
+    COUNT(DISTINCT o.RunType) AS Triggered_RunTypes
+FROM dbo.vwCases d
+    JOIN vwCaseServiceSummary e ON d.caseid = e.caseid
+    JOIN vwCodeList m ON e.RetirementTypeId = m.CodeId
+    JOIN dbo.tblResults A ON a.CaseId = d.CaseId
+    JOIN dbo.tblAdjustments b ON d.CaseId = b.CaseId 
+    JOIN dbo.vwCodeList c ON b.AddDeductCodeId = c.CodeId       
+    JOIN tblRunResults o ON b.CaseId = o.CaseId AND o.bTriggered = 1
+WHERE d.Status = '300' 
+    AND c.CodeType = 'AddDeductCodes' 
+    AND c.CodeAbbrev = '67'
+    AND e.CaseType IN(2, 3)
+    AND RetirementTypeId <> [dbo].[fGetCodeId]('C','SepCodes')
+GROUP BY d.CaseId, d.Claim
+HAVING COUNT(DISTINCT o.RunType) > 1
+ORDER BY d.CaseId
+
+-- ================================================================
+-- STEP 4: UNDERSTAND THE ROOT CAUSE
+-- ================================================================
+
+-- Check the history of how these multiple triggered runs were created
+SELECT 
+    rr.CaseId,
+    cl.Claim,
+    rr.RunType,
+    rr.Method,
+    rr.Created,
+    rr.CreatedBy,
+    LAG(rr.Created) OVER (PARTITION BY rr.CaseId ORDER BY rr.Created) AS Previous_Created,
+    DATEDIFF(minute, LAG(rr.Created) OVER (PARTITION BY rr.CaseId ORDER BY rr.Created), rr.Created) AS Minutes_Between
+FROM tblRunResults rr
+    JOIN tblCases c ON rr.CaseId = c.CaseId
+    JOIN tblClaim cl ON c.ClaimId = cl.ClaimId
+WHERE rr.bTriggered = 1
+    AND rr.CaseId IN (
+        SELECT CaseId FROM tblRunResults WHERE bTriggered = 1 GROUP BY CaseId HAVING COUNT(DISTINCT RunType) > 1
+    )
+ORDER BY rr.CaseId, rr.Created
+
+-- ================================================================
+-- STEP 5: DATA FIXES
+-- ================================================================
+
+-- OPTION 1: Keep only the most recent triggered run per CaseId
+-- This is usually the safest approach
+
+-- First, let's see what we would be changing:
+SELECT 
+    'Records that would be un-triggered' AS Action,
+    rr.CaseId,
+    cl.Claim,
+    rr.RunType,
+    rr.Method,
+    rr.Created,
+    rr.CreatedBy
+FROM tblRunResults rr
+    JOIN tblCases c ON rr.CaseId = c.CaseId
+    JOIN tblClaim cl ON c.ClaimId = cl.ClaimId
+    JOIN (
+        -- Get the most recent triggered run per CaseId
+        SELECT 
+            CaseId,
+            MAX(Created) AS Latest_Created
+        FROM tblRunResults 
+        WHERE bTriggered = 1 
+        GROUP BY CaseId
+        HAVING COUNT(DISTINCT RunType) > 1  -- Only cases with multiple RunTypes
+    ) latest ON rr.CaseId = latest.CaseId
+WHERE rr.bTriggered = 1
+    AND rr.Created < latest.Latest_Created  -- These are the older ones we'll un-trigger
+ORDER BY rr.CaseId, rr.Created
+
+-- ACTUAL FIX: Un-trigger all but the most recent run per CaseId
+UPDATE rr
+SET bTriggered = 0
+FROM tblRunResults rr
+    JOIN (
+        -- Get the most recent triggered run per CaseId for cases with multiple RunTypes
+        SELECT 
+            CaseId,
+            MAX(Created) AS Latest_Created
+        FROM tblRunResults 
+        WHERE bTriggered = 1 
+        GROUP BY CaseId
+        HAVING COUNT(DISTINCT RunType) > 1
+    ) latest ON rr.CaseId = latest.CaseId
+WHERE rr.bTriggered = 1
+    AND rr.Created < latest.Latest_Created
+
+-- Show how many records were updated
+SELECT @@ROWCOUNT AS Records_Un_Triggered
+
+-- ================================================================
+-- OPTION 2: Keep only the run with the highest RunType per CaseId
+-- (Alternative approach if business logic requires this)
+-- ================================================================
+
+/*
+-- Un-trigger all but the highest RunType per CaseId
+UPDATE rr
+SET bTriggered = 0
+FROM tblRunResults rr
+    JOIN (
+        -- Get the highest RunType per CaseId for cases with multiple RunTypes
+        SELECT 
+            CaseId,
+            MAX(RunType) AS Highest_RunType
+        FROM tblRunResults 
+        WHERE bTriggered = 1 
+        GROUP BY CaseId
+        HAVING COUNT(DISTINCT RunType) > 1
+    ) highest ON rr.CaseId = highest.CaseId
+WHERE rr.bTriggered = 1
+    AND rr.RunType < highest.Highest_RunType
+*/
+
+-- ================================================================
+-- OPTION 3: Keep only Method = 0 runs
+-- (If the issue is mixing different Method values)
+-- ================================================================
+
+/*
+-- Un-trigger all non-Method 0 runs for cases with multiple RunTypes
+UPDATE rr
+SET bTriggered = 0
+FROM tblRunResults rr
+WHERE rr.bTriggered = 1
+    AND rr.Method <> 0
+    AND rr.CaseId IN (
+        SELECT CaseId FROM tblRunResults WHERE bTriggered = 1 GROUP BY CaseId HAVING COUNT(DISTINCT RunType) > 1
+    )
+*/
+
+-- ================================================================
+-- STEP 6: VERIFICATION
+-- ================================================================
+
+-- After applying the fix, verify no cases have multiple triggered RunTypes
+SELECT 
+    'Verification - Should be empty' AS Check_Type,
+    rr.CaseId,
+    cl.Claim,
+    COUNT(DISTINCT rr.RunType) AS Distinct_RunTypes
+FROM tblRunResults rr
+    JOIN tblCases c ON rr.CaseId = c.CaseId
+    JOIN tblClaim cl ON c.ClaimId = cl.ClaimId
+WHERE rr.bTriggered = 1
+GROUP BY rr.CaseId, cl.Claim
+HAVING COUNT(DISTINCT rr.RunType) > 1
+ORDER BY rr.CaseId
+
+-- ================================================================
+-- STEP 7: TEST THE JOB STEP QUERY
+-- ================================================================
+
+-- Test the problematic part of the job step query to ensure it works now
+SELECT 
+    'Job Step Test - Should work without error' AS Test_Type,
+    COUNT(*) AS Case_Count
+FROM (
+    SELECT DISTINCT
+        d.CaseId,
+        d.Claim
+    FROM dbo.vwCases d
+        JOIN vwCaseServiceSummary e ON d.caseid = e.caseid
+        JOIN vwCodeList m ON e.RetirementTypeId = m.CodeId
+        JOIN dbo.tblResults A ON a.CaseId = d.CaseId
+        JOIN dbo.tblAdjustments b ON d.CaseId = b.CaseId 
+        JOIN dbo.vwCodeList c ON b.AddDeductCodeId = c.CodeId       
+    WHERE d.Status = '300' 
+        AND c.CodeType = 'AddDeductCodes' 
+        AND c.CodeAbbrev = '67'
+        AND e.CaseType IN(2, 3)
+        AND RetirementTypeId <> [dbo].[fGetCodeId]('C','SepCodes')
+        AND b.RunType = (SELECT o.RunType FROM tblRunResults o WHERE b.CaseId = o.CaseId AND o.bTriggered = 1)  -- This should work now
+) test_query
+
+-- ================================================================
+-- STEP 8: PREVENTION
+-- ================================================================
+
+-- To prevent this issue in the future, consider adding a check/constraint
+-- or modifying the trigger logic to ensure only one RunType per CaseId can be triggered
+
+-- Check current trigger logic:
+SELECT 
+    'Current Triggered Status Summary' AS Info,
+    COUNT(DISTINCT CaseId) AS Total_Cases_With_Triggered_Runs,
+    COUNT(*) AS Total_Triggered_Records,
+    COUNT(DISTINCT CaseId + CAST(RunType AS VARCHAR)) AS Unique_CaseId_RunType_Combinations
+FROM tblRunResults 
+WHERE bTriggered = 1
