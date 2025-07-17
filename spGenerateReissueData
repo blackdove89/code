@@ -1,0 +1,11 @@
+spGenerateReissueData E:\FACESData\MFData\Reissue\2025\07\mfp_R0717, 0
+ ==> 2
+Msg 8152, Level 16, State 30, Procedure spProcessReissueCases, Line 279 [Batch Start Line 46]
+String or binary data would be truncated.
+The statement has been terminated.
+Msg 8152, Level 16, State 30, Procedure spProcessReissueCases, Line 454 [Batch Start Line 46]
+String or binary data would be truncated.
+The statement has been terminated.
+spProcessReissueCases --> ParseMFData command failed with exit code 1. Command executed: "E:\FACESData\ParseMFData" "E:\FACESData\" "E:\FACESData\MFData\Reissue\2025\07\mfp_R0717" 1. Check if ParseMFData.exe exists in directory: E:\FACESData\, verify it has execute permissions, and ensure all required DLL files are present. Also verify the data directory path is accessible and the input file format is correct.
+
+Completion time: 2025-07-17T14:23:06.4874640-04:00
