@@ -1,0 +1,34 @@
+BEGIN CATCH
+    -- Capture error details
+    DECLARE @ErrorMsg NVARCHAR(4000)
+    DECLARE @ErrorLine INT
+    
+    SET @ErrorMsg = ERROR_MESSAGE()
+    SET @ErrorLine = ERROR_LINE()
+    
+    -- Build error message using ISNULL to avoid NULL concatenation
+    SET @sReason = 'Failed Processing (CaseId: ' + CAST(@nCaseId AS VARCHAR(10)) + 
+                   ', Claim: ' + ISNULL(@ClaimNumber, 'Unknown') + ')'
+    
+    -- Add error detail
+    SET @sReason = @sReason + ' - Error: ' + ISNULL(@ErrorMsg, 'No error message captured')
+    
+    -- Add line number if available  
+    IF @ErrorLine IS NOT NULL
+        SET @sReason = @sReason + ' [Line: ' + CAST(@ErrorLine AS VARCHAR(10)) + ']'
+    
+    -- Debug output
+    IF @bDebug = 1
+    BEGIN
+        PRINT 'CATCH BLOCK DEBUG:'
+        PRINT '  ErrorMsg: ' + ISNULL(@ErrorMsg, 'NULL')
+        PRINT '  Final sReason: ' + @sReason
+    END
+    
+    -- Log the error
+    INSERT INTO tblErrorLog (CaseId, Process, ErrorMsg) 
+    VALUES (@nCaseId, 'spGenerateMFData', @sReason)
+    
+    SET @nMissingData = @nMissingData + 1
+    SET @sErrorMsg = @sErrorMsg + @sCR + @ClaimNumber + '  ' + @sReason
+END CATCH
