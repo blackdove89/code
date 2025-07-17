@@ -1,0 +1,26 @@
+Test the Fixed Version:
+sql-- Test 1: Invalid directory path
+UPDATE tblConfiguration 
+SET KeyValue = 'Z:\InvalidPath\'
+WHERE KeyName = 'MFDataDirectory'
+
+EXEC spProcessReissueCases @bSendMail = 0, @bSendFile = 0, @bDebug = 1
+
+-- Should now log: "Failed to create directory: Z:\InvalidPath\MFData\Reissue\2025\07..."
+
+-- Test 2: Check error log
+SELECT TOP 5 Date, Process, LEN(ErrorMsg) AS Length, ErrorMsg
+FROM tblErrorLog 
+WHERE Process = 'spProcessReissueCases'
+ORDER BY Date DESC
+
+-- Restore config
+UPDATE tblConfiguration SET KeyValue = 'E:\FACESData\' WHERE KeyName = 'MFDataDirectory'
+Now spProcessReissueCases Will Log:
+✅ Directory creation failures
+✅ ParseMFData.exe execution errors
+✅ FTP/sendfile command failures
+✅ File system access problems
+✅ Complete error context with file paths
+✅ Specific error codes and troubleshooting hints
+Instead of just showing "cannot find the path specified" in console output, all errors will be properly captured in tblErrorLog with full context and actionable information.RetryClaude can make mistakes. Please double-check responses.
