@@ -1,56 +1,113 @@
-SELECT TOP (1000) [RunType]
-      ,[Method]
-      ,[CaseId]
-      ,[AverageSalary]
-      ,[AnnualBenefit]
-      ,[CSRSMonthly]
-      ,[FERSMonthly]
-      ,[SurvivorRate]
-      ,[Pre82Deposit]
-      ,[Post82Deposit]
-      ,[Post82DepositInterest]
-      ,[FERSDeposit]
-      ,[FERSDepositInterest]
-      ,[Pre90Redeposit]
-      ,[Pre90RedepositInterest]
-      ,[Post90RedepositInterest]
-      ,[Age62Rate]
-      ,[CSRSProration]
-      ,[FERSProration]
-      ,[bTriggered]
-      ,[CSRSEarnedRate]
-      ,[FERSEarnedRate]
-      ,[MFEarnedRate]
-      ,[totalserviceold]
-      ,[UnreducedEarnedRate]
-      ,[bVoluntaryOverride]
-      ,[AgeReduction]
-      ,[SurvivorReduction]
-      ,[TotalCSRSService]
-      ,[TotalFERSService]
-      ,[CSRSService]
-      ,[FERSService]
-      ,[Age62Service]
-      ,[LawCSRSService]
-      ,[LawFERSService]
-      ,[bASEligible]
-      ,[ProvRetCode]
-      ,[ColaSurvivorRate]
-      ,[ServicePurchasedCode]
-      ,[Pre82DepositInterest]
-      ,[Post90Redeposit]
-      ,[CalcRetirementType]
-      ,[FERSReDeposit]
-      ,[FERSReDepositInterest]
-      ,[TotalTitleService]
-      ,[TotalComputationService]
-      ,[CSRSSurvivorAnnualReduced]
-      ,[FERSSurvivorAnnualReduced]
-      ,[FERSOWCPEnhancement]
-      ,[FERSAnnual]
-      ,[CSRSAnnual]
-      ,[CombinedOWCPEnhancement]
-      ,[FERSAgeReduction]
-      ,[TotalOWCPEnhancement]
-      ,[OWCPFactor]
-  FROM [RETIRE].[dbo].[tblRunResults]
+USE [RETIRE]
+GO
+
+/****** Object:  Table [dbo].[tblRunResults]    Script Date: 7/17/2025 8:37:16 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [dbo].[tblRunResults](
+	[RunType] [tinyint] NOT NULL,
+	[Method] [tinyint] NOT NULL,
+	[CaseId] [int] NOT NULL,
+	[AverageSalary] [decimal](9, 2) NULL,
+	[AnnualBenefit] [decimal](9, 2) NULL,
+	[CSRSMonthly] [int] NOT NULL,
+	[FERSMonthly] [int] NOT NULL,
+	[SurvivorRate] [int] NULL,
+	[Pre82Deposit] [int] NULL,
+	[Post82Deposit] [int] NULL,
+	[Post82DepositInterest] [int] NULL,
+	[FERSDeposit] [int] NULL,
+	[FERSDepositInterest] [int] NULL,
+	[Pre90Redeposit] [int] NULL,
+	[Pre90RedepositInterest] [int] NULL,
+	[Post90RedepositInterest] [int] NULL,
+	[Age62Rate] [int] NULL,
+	[CSRSProration] [decimal](3, 2) NULL,
+	[FERSProration] [decimal](3, 2) NULL,
+	[bTriggered] [bit] NULL,
+	[CSRSEarnedRate] [decimal](9, 2) NOT NULL,
+	[FERSEarnedRate] [decimal](9, 2) NOT NULL,
+	[MFEarnedRate] [decimal](9, 2) NULL,
+	[totalserviceold] [int] NOT NULL,
+	[UnreducedEarnedRate] [decimal](9, 2) NOT NULL,
+	[bVoluntaryOverride] [bit] NOT NULL,
+	[AgeReduction] [decimal](9, 2) NULL,
+	[SurvivorReduction] [decimal](9, 2) NULL,
+	[TotalCSRSService] [dbo].[udtSERVICE] NULL,
+	[TotalFERSService] [dbo].[udtSERVICE] NULL,
+	[CSRSService] [dbo].[udtSERVICE] NULL,
+	[FERSService] [dbo].[udtSERVICE] NULL,
+	[Age62Service] [dbo].[udtSERVICE] NULL,
+	[LawCSRSService] [dbo].[udtSERVICE] NULL,
+	[LawFERSService] [dbo].[udtSERVICE] NULL,
+	[bASEligible] [bit] NULL,
+	[ProvRetCode] [smallint] NOT NULL,
+	[ColaSurvivorRate] [int] NULL,
+	[ServicePurchasedCode] [varchar](2) NOT NULL,
+	[Pre82DepositInterest] [int] NULL,
+	[Post90Redeposit] [int] NULL,
+	[CalcRetirementType] [varchar](1) NULL,
+	[FERSReDeposit] [int] NULL,
+	[FERSReDepositInterest] [int] NULL,
+	[TotalTitleService] [dbo].[udtSERVICE] NULL,
+	[TotalComputationService] [dbo].[udtSERVICE] NULL,
+	[CSRSSurvivorAnnualReduced] [decimal](11, 4) NULL,
+	[FERSSurvivorAnnualReduced] [decimal](11, 4) NULL,
+	[FERSOWCPEnhancement] [decimal](9, 2) NULL,
+	[FERSAnnual] [decimal](9, 2) NULL,
+	[CSRSAnnual] [decimal](9, 2) NULL,
+	[CombinedOWCPEnhancement] [decimal](9, 2) NULL,
+	[FERSAgeReduction] [decimal](9, 2) NULL,
+	[TotalOWCPEnhancement] [decimal](9, 2) NULL,
+	[OWCPFactor] [decimal](12, 6) NULL,
+ CONSTRAINT [tblRunResults_PK] PRIMARY KEY CLUSTERED 
+(
+	[RunType] ASC,
+	[Method] ASC,
+	[CaseId] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, FILLFACTOR = 90, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+) ON [PRIMARY]
+GO
+
+ALTER TABLE [dbo].[tblRunResults] ADD  DEFAULT (0) FOR [CSRSMonthly]
+GO
+
+ALTER TABLE [dbo].[tblRunResults] ADD  DEFAULT (0) FOR [FERSMonthly]
+GO
+
+ALTER TABLE [dbo].[tblRunResults] ADD  DEFAULT (0) FOR [bTriggered]
+GO
+
+ALTER TABLE [dbo].[tblRunResults] ADD  DEFAULT (0) FOR [CSRSEarnedRate]
+GO
+
+ALTER TABLE [dbo].[tblRunResults] ADD  DEFAULT (0) FOR [FERSEarnedRate]
+GO
+
+ALTER TABLE [dbo].[tblRunResults] ADD  DEFAULT (0) FOR [totalserviceold]
+GO
+
+ALTER TABLE [dbo].[tblRunResults] ADD  DEFAULT (0) FOR [UnreducedEarnedRate]
+GO
+
+ALTER TABLE [dbo].[tblRunResults] ADD  DEFAULT (0) FOR [bVoluntaryOverride]
+GO
+
+ALTER TABLE [dbo].[tblRunResults] ADD  DEFAULT (0) FOR [ProvRetCode]
+GO
+
+ALTER TABLE [dbo].[tblRunResults] ADD  DEFAULT ('01') FOR [ServicePurchasedCode]
+GO
+
+ALTER TABLE [dbo].[tblRunResults]  WITH CHECK ADD  CONSTRAINT [tblRunResults_FK1] FOREIGN KEY([CaseId])
+REFERENCES [dbo].[tblCases] ([CaseId])
+GO
+
+ALTER TABLE [dbo].[tblRunResults] CHECK CONSTRAINT [tblRunResults_FK1]
+GO
+
+
