@@ -1,0 +1,48 @@
+1. Added @CurrentCaseId OUTPUT Parameter
+
+Modified spGenerateMFData to include @CurrentCaseId INT = NULL OUTPUT
+Modified spGenerateReissueData to include @CurrentCaseId INT = NULL OUTPUT
+Added SET @CurrentCaseId = @nCaseId at the start of case processing
+Added SET @CurrentCaseId = NULL when processing completes successfully
+
+2. Modified spProcessCases
+
+Added @CurrentCaseId INT = NULL variable
+Changed error message size from VARCHAR(100) to VARCHAR(2000)
+Modified call to spGenerateMFData to capture @CurrentCaseId OUTPUT
+Enhanced error messages with context (date, records processed, debug status)
+Added backward compatibility check for procedures with/without OUTPUT parameter
+
+3. Modified spProcessReissueCases
+
+Added @CurrentCaseId INT = NULL variable
+Changed error message size from VARCHAR(100) to VARCHAR(2000)
+Added comprehensive TRY-CATCH around entire procedure
+Enhanced error handling for directory creation
+Added context to all error messages
+
+4. Modified spCalcGrossToNet_main
+
+Changed @str VARCHAR(250) to VARCHAR(1000) to prevent truncation
+Enhanced error messages to include CaseId and parameter context
+Updated all error logging to include CaseId
+
+5. Error Message Enhancements
+
+Changed all procedures to use ISNULL() to handle NULL concatenation
+Added line numbers, procedure names, and error context to messages
+Fixed CATCH blocks to properly capture ERROR_MESSAGE()
+Added debug output to track error handling flow
+
+6. Fixed ErrorLog Table Issues
+
+Identified need to increase ErrorMsg column size (recommended VARCHAR(2000) or VARCHAR(MAX))
+Added truncation handling for cases where column can't be altered
+
+Key Benefits:
+
+CaseId is now tracked throughout all error scenarios
+Error messages are complete with full context
+No truncation of important error details
+Backward compatible with existing code
+Better debugging with enhanced error information
