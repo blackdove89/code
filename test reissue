@@ -1,0 +1,122 @@
+1. Look for Cases with Invalid/Missing Data
+Missing Required Fields:
+sql-- Cases missing critical data that might cause errors
+SELECT CaseId, DateOfBirth, AnnuityStartDate, StatusCodeId
+FROM tblCases 
+WHERE DateOfBirth IS NULL 
+   OR AnnuityStartDate IS NULL
+   OR StatusCodeId IS NULL
+Invalid Status Codes:
+sql-- Cases with unusual status codes
+SELECT c.CaseId, sc.Abbrev as StatusCode, sc.Description
+FROM tblCases c
+LEFT JOIN rtblCode sc ON c.StatusCodeId = sc.CodeId
+WHERE sc.Abbrev NOT IN ('100', '101', '102', '103')  -- Common valid statuses
+2. Find Cases with Data Inconsistencies
+Invalid Dates:
+sql-- Cases with impossible date combinations
+SELECT CaseId, DateOfBirth, DateOfDeath, AnnuityStartDate
+FROM tblCases
+WHERE DateOfBirth > AnnuityStartDate
+   OR (DateOfDeath IS NOT NULL AND DateOfDeath < DateOfBirth)
+   OR AnnuityStartDate < '1900-01-01'
+Missing Related Data:
+sql-- Cases missing required related records
+SELECT c.CaseId
+FROM tblCases c
+LEFT JOIN tblResults r ON c.CaseId = r.CaseId
+WHERE r.CaseId IS NULL
+   AND c.StatusCodeId = dbo.fGetCodeId('101', 'StatusCodes')  -- Active cases
+3. Create a Test Case
+Insert a Problem Case:
+sql-- Create a test case with intentionally bad data
+INSERT INTO tblCases (DateOfBirth, AnnuityStartDate, StatusCodeId)
+VALUES ('1900-01-01', '1899-01-01', 999)  -- Invalid: start before birth, bad status
+
+-- Get the CaseId
+DECLARE @TestCaseId INT = SCOPE_IDENTITY()
+SELECT @TestCaseId as TestCaseId
+4. Use an Existing Case and Break It Temporarily
+Backup and Modify:
+sql-- Find a valid case first
+SELECT TOP 1 CaseId FROM tblCases 
+WHERE StatusCodeId = dbo.fGetCodeId('101', 'StatusCodes')
+
+-- Let's say CaseId = 12345
+DECLARE @TestCaseId INT = 12345
+
+-- Backup the original data
+SELECT * INTO #BackupCase FROM tblCases WHERE CaseId = @TestCaseId
+
+-- Break it temporarily
+UPDATE tblCases 
+SET DateOfBirth = NULL  -- This should cause errors
+WHERE CaseId = @TestCaseId
+
+-- Test your procedure
+EXEC spProcessReissueCases @CaseId = @TestCaseId, @bSendMail = 0, @bSendFile = 0
+
+-- Check for errors
+SELECT * FROM tblErrorLog 
+WHERE CaseId = @TestCaseId 
+AND Date >= DATEADD(MINUTE, -5, GETDATE())
+
+-- Restore the data
+UPDATE tblCases 
+SET DateOfBirth = (SELECT DateOfBirth FROM #BackupCase)
+WHERE CaseId = @TestCaseId
+
+DROP TABLE #BackupCase
+5. Look for Cases That Failed Before
+Cases Already in Error Log:
+sql-- Find CaseIds that have errored before
+SELECT DISTINCT CaseId, COUNT(*) as ErrorCount
+FROM tblErrorLog 
+WHERE CaseId IS NOT NULL
+GROUP BY CaseId
+ORDER BY ErrorCount DESC
+Cases with Specific Error Patterns:
+sql-- Cases that failed in related procedures
+SELECT DISTINCT CaseId
+FROM tblErrorLog 
+WHERE Process LIKE '%Gross%' 
+   OR Process LIKE '%Generate%'
+   OR ErrorMsg LIKE '%CaseId%'
+6. Quick Test Query
+Find the Most Likely Problem Case:
+sql-- This query finds cases most likely to cause errors
+SELECT TOP 5 
+    c.CaseId,
+    c.DateOfBirth,
+    c.AnnuityStartDate,
+    c.StatusCodeId,
+    sc.Abbrev as Status,
+    CASE 
+        WHEN c.DateOfBirth IS NULL THEN 'Missing Birth Date'
+        WHEN c.AnnuityStartDate IS NULL THEN 'Missing Annuity Start'
+        WHEN c.DateOfBirth > c.AnnuityStartDate THEN 'Invalid Date Order'
+        WHEN sc.CodeId IS NULL THEN 'Invalid Status Code'
+        ELSE 'Other Issue'
+    END as ProblemType
+FROM tblCases c
+LEFT JOIN rtblCode sc ON c.StatusCodeId = sc.CodeId
+WHERE c.DateOfBirth IS NULL 
+   OR c.AnnuityStartDate IS NULL
+   OR c.DateOfBirth > c.AnnuityStartDate
+   OR sc.CodeId IS NULL
+ORDER BY c.CaseId DESC
+Recommended Testing Approach:
+
+Start with Query #6 to find naturally problematic cases
+Use Query #5 to find cases that have errored before
+If no problematic cases exist, use approach #4 to temporarily break a case
+Test with:
+sqlEXEC spProcessReissueCases @CaseId = [YourTestCaseId], @bSendMail = 0, @bSendFile = 0, @bDebug = 1
+
+Check results:
+sqlSELECT * FROM tblErrorLog 
+WHERE CaseId = [YourTestCaseId] 
+AND Date >= DATEADD(MINUTE, -10, GETDATE())
+
+
+Which approach would you like to try first?
